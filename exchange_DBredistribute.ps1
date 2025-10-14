@@ -37,6 +37,7 @@
 .VERSIONS
     V1.0 12.10.2025 - Initial Version
     V1.2 13.10.2025 - Minor Console Output changes & adding parameters
+    V1.3 14.10.2025 - Changed the way a database will be excluded from further mailbox provisioning
     
 .AUTHOR/COPYRIGHT:
     Steffen Meyer
@@ -67,7 +68,7 @@ Param(
      [Switch]$NoNewProvisioning
      )
 
-$version = "V1.2_13.10.2025"
+$version = "V1.3_14.10.2025"
 
 $now = Get-Date -Format G
 
@@ -374,8 +375,8 @@ foreach ($SourceDB in $SourceDBs)
     
     if ($NoNewProvisioning)
     {
-        $IsExcluded = Get-MailboxDatabase $SourceDB | Set-MailboxDatabase -IsExcludedFromProvisioning $True
-        Write-Host "NOTICE: Source Database $($SourceDB) was excluded from further provisioning successfully."
+        $IsExcluded = (Get-MailboxDatabase $SourceDB).distinguishedname | Set-ADObject -Replace @{msExchProvisioningFlags=3}
+        Write-Host "NOTICE: Source Database $($SourceDB) was excluded from further Mailbox provisioning successfully."
     }
     $Mailboxes += Get-ExDBStatistics -SourceDB $SourceDB -MBXType ""
 
