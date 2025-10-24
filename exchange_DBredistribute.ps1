@@ -40,7 +40,7 @@
 .VERSIONS
     V1.0 12.10.2025 - Initial Version
     V1.2 13.10.2025 - Minor Console Output changes & adding parameters
-    V1.3 21.10.2025 - Added ForeCreate parameter for creating Batches and MoveRequests
+    V1.3 21.10.2025 - Added ForceCreate parameter for creating Batches and MoveRequests
     
 .AUTHOR/COPYRIGHT:
     Steffen Meyer
