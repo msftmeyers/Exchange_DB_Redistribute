@@ -57,6 +57,7 @@
     V1.4  06.11.2025 - Small param comment corrections & changed the way, a database is excluded from MailboxProvisioning
     V1.5  03.12.2025 - Small corrections, description added
     V1.6  17.03.2026 - Fixed special situation, when Mailbox and Archive are part of the same Redistribute action (you cannot create two Move-Requests of the same name)
+    V2.0  18.03.2026 - New calculation of targetdatabase and targetarchivedatabase (better distribution), some script consolidation
 #>
 
 [CmdletBinding(DefaultParameterSetName="SingleDB")]
@@ -84,7 +85,7 @@ Param(
      [Switch]$NoNewProvisioning
      )
 
-$version = "V1.5_03.12.2025"
+$version = "V2.0_18.03.2026"
 
 $now = Get-Date -Format G
 
@@ -302,6 +303,12 @@ If (!($ForceCreate))
     Write-Host   "---------------------------------------------------------------------------------------" -Foregroundcolor Yellow
 }
 
+#Create .\CSV Subfolder
+if (!(Test-Path "$($ScriptPath)\CSV"))
+{
+    $CSVDir = New-Item -Path "$($ScriptPath)\CSV" -ItemType Directory -Force
+}
+
 #SourceDBsCSV
 if ($PSCmdlet.ParameterSetName -eq "SourceDBsCSV")
 {
@@ -329,7 +336,7 @@ if (Test-Path -Path "$ScriptPath\$StagingDBsCSV")
 }
 else
 {
-    Write-Host "`nThe required staging databases file $($StagingDBsCSV) file is missing. Add the file with a list of staging DB(s) to ensure a working SCRIPT." -ForegroundColor Red
+    Write-Host "`nWe couldn't find the required file ""$($scriptpath)\$($StagingDBsCSV)"". Provide the folder ""CSV"" and add the file with a list of staging/destination DB(s) to ensure a working SCRIPT." -ForegroundColor Red
     Return
 }
 
@@ -415,7 +422,7 @@ foreach ($SourceDB in $SourceDBs)
     $ArchiveMBXs += Get-ExDBArchives -SourceDB $SourceDB
 }
 
-#Mailboxes and Archives of mailbox are in the list of SourceDBs
+#MailboxDB AND ArchiveDB of a particular mailbox are in the list of SourceDBs
 $MBXsArchives = $Mailboxes | Where-Object { $ArchiveMBXs.ExchangeGuid -contains $_.ExchangeGuid }
 
 #Summarize mailboxcount to be moved
@@ -429,7 +436,7 @@ Write-Host   "$($AuditLogMBXs.Count) Auditlog mailbox(es)"
 #Fetch all MailboxStatistics of all Standard mailboxes of SourceDB(s) into an object sorted by ascending totalsize
 if ($Mailboxes)
 {
-    $MailboxesResult = Get-ExMBXStatistics -Mailboxes $Mailboxes | Sort-Object SUM
+    $MailboxesResult = Get-ExMBXStatistics -Mailboxes $Mailboxes
 }
 
 #Fetch all MailboxStatistics of all PublicFolder mailboxes of SourceDB(s) into an object
@@ -453,24 +460,122 @@ if ($AuditLogMBXs)
 #Fetch all MailboxStatistics of all Archive mailboxes of SourceDB(s) into an object sorted by ascending totalarchivesize
 if ($ArchiveMBXs)
 {
-    $ArchiveMBXsResult = Get-ExMBXStatistics -Mailboxes $ArchiveMBXs -Archive | Sort-Object ArchiveSUM
+    $ArchiveMBXsResult = Get-ExMBXStatistics -Mailboxes $ArchiveMBXs -Archive
 }
 
-#Create an object for a CSV import file for MigrationBatch(es) for Standard mailboxes with a fitting staging database entry (by a simple algorithm schema)
+#Summarize Stats
+$AllMBXsResult = @()
+
+#Standard Mailboxes
 if ($Mailboxes)
 {
+    $AllMBXsResult += $MailboxesResult | ForEach-Object {
+        [PSCustomObject]@{
+            Emailaddress             = $_.EmailAddress
+            Database                 = $_.Database
+            Totalitemsize            = $_.TotalitemsizeInkB
+            TotalDeleteditemsizeInkB = $_.TotalDeleteditemsizeInkB
+            SUM                      = $_.SUM
+            Itemcount                = $_.Itemcount
+            Name                     = $_.Name
+            ExGuid                   = $_.ExGuid
+            MailboxType              = "User"
+            }
+        }
+}
+
+#Archive Mailboxes
+if ($ArchiveMBXs)
+{
+    $AllMBXsResult += $ArchiveMBXsResult | ForEach-Object {
+        [PSCustomObject]@{
+            Emailaddress             = $_.EmailAddress
+            Database                 = $_.ArchiveDatabase
+            Totalitemsize            = $_.ArchiveTotalitemsizeInkB
+            TotalDeleteditemsizeInkB = $_.ArchiveTotalDeleteditemsizeInkB
+            SUM                      = $_.ArchiveSUM
+            Itemcount                = $_.ArchiveItemcount
+            Name                     = $_.Name
+            ExGuid                   = $_.ExGuid
+            MailboxType              = "Archive"
+            }
+        }
+}
+
+#PublicFolder Mailboxes
+if ($PFMBXs)
+{
+    $AllMBXsResult += $PFMBXsResult | ForEach-Object {
+        [PSCustomObject]@{
+            Emailaddress             = $_.EmailAddress
+            Database                 = $_.Database
+            Totalitemsize            = $_.TotalitemsizeInkB
+            TotalDeleteditemsizeInkB = $_.TotalDeleteditemsizeInkB
+            SUM                      = $_.SUM
+            Itemcount                = $_.Itemcount
+            Name                     = $_.Name
+            ExGuid                   = $_.ExGuid
+            MailboxType              = "PublicFolder"
+            }
+        }
+}
+
+#Arbitration Mailboxes
+if ($ArbitrationMBXs)
+{
+    $AllMBXsResult += $ArbitrationMBXsResult | ForEach-Object {
+        [PSCustomObject]@{
+            Emailaddress             = $_.EmailAddress
+            Database                 = $_.Database
+            Totalitemsize            = $_.TotalitemsizeInkB
+            TotalDeleteditemsizeInkB = $_.TotalDeleteditemsizeInkB
+            SUM                      = $_.SUM
+            Itemcount                = $_.Itemcount
+            Name                     = $_.Name
+            ExGuid                   = $_.ExGuid
+            MailboxType              = "Arbitration"
+            }
+        }
+}
+
+#Auditlog Mailboxes
+if ($AuditlogMBXs)
+{
+    $AllMBXsResult += $AuditLogMBXsResult | ForEach-Object {
+        [PSCustomObject]@{
+            Emailaddress             = $_.EmailAddress
+            Database                 = $_.Database
+            Totalitemsize            = $_.TotalitemsizeInkB
+            TotalDeleteditemsizeInkB = $_.TotalDeleteditemsizeInkB
+            SUM                      = $_.SUM
+            Itemcount                = $_.Itemcount
+            Name                     = $_.Name
+            ExGuid                   = $_.ExGuid
+            MailboxType              = "Auditlog"
+            }
+        }
+}
+
+#Sort and assign TargetDatabase value from stagingDBs (simple algorithm to forward and backward fill all mailboxes from an ascending order of SUM of totalmailboxsize and totaldeletedmailboxsize
+if ($AllMBXsResult)
+{
+    $AllMBXsResult = $AllMBXsResult | Sort-Object SUM
+
     $Index = 0
     $Direction = 1
     $MaxIndex = $StagingDBsCount - 1
 
-    $MailboxesObject = foreach ($MailboxResult in $MailboxesResult)
+    $MailboxesObject = foreach ($AllMBXResult in $AllMBXsResult)
     {
         $TargetDatabase = $StagingDBs[$Index]
 
         [PSCustomObject]@{
-        EmailAddress = $MailboxResult.EmailAddress
-        TargetDatabase = $TargetDatabase
-        BadItemLimit = $BadItemLimit
+        EmailAddress          = $AllMBXResult.EmailAddress
+        TargetDatabase        = $(if ($AllMBXResult.MailboxType -ne "Archive") { $TargetDatabase } else { $null })
+        TargetArchiveDatabase = $(if ($AllMBXResult.MailboxType -eq "Archive") { $TargetDatabase } else { $null })
+        BadItemLimit          = $BadItemLimit
+        MailboxType           = $AllMBXResult.MailboxType
+        Name                  = $AllMBXResult.Name
         }
 
         $Next = $Index + $Direction
@@ -484,347 +589,324 @@ if ($Mailboxes)
             $Index = $Next
         }
     }
-        
-    #Filter out all Mailboxes, where Source DB(s) is/are found for Database AND ArchiveDatabase
-    $MailboxesBatchObject = $MailboxesObject | Where-Object { $_.EmailAddress -notin $MBXsArchives.PrimarySmtpAddress }
-    
-    #Export to CSV file, every CSV will not consist of more than $MailboxBatchBlocksize mailboxes
-    $MailboxBatchCounter = 1
 
-    $MailboxesBatchObject | ForEach-Object -Begin {
-    
-        $Index = 0
-        $Batch = @()
-    } -Process {
-    $Batch += $_
-    $Index++
+    #Create three different types of CSVs and migration batches (Primary only, Archive only and Primary+Archive)
 
-    #always $MailboxBatchBlockSize mailboxes per batch
-    if ($Index -eq $MailboxBatchBlocksize)
+    #Filter out all Mailboxes, only PrimaryMailbox needs to be moved here
+    $MailboxesBatchObject = $MailboxesObject | Where-Object { $_.EmailAddress -notin $MBXsArchives.PrimarySmtpAddress -and $_.MailboxType -eq "User"}
+    
+    $MailboxBatchCounter = 0
+
+    if ($MailboxesBatchObject)
     {
-        $Batch | Export-Csv -Path "$Scriptpath\batch_mailboxes_$($MailboxBatchCounter).csv" -NoTypeInformation -Encoding UTF8
-        
-        if ($ForceCreate)
+        #Export to CSV file, every CSV will not consist of more than $MailboxBatchBlocksize mailboxes
+        $MailboxesBatchObject | ForEach-Object -Begin {
+            $MailboxBatchCounter++
+            $Index = 0
+            $Batch = @()
+        } -Process {
+        $Batch += $_ | Select-Object EmailAddress,TargetDatabase,BadItemLimit
+        $Index++
+
+        #always $MailboxBatchBlockSize mailboxes per batch
+        if ($Index -eq $MailboxBatchBlocksize)
         {
-            Write-Host "`nNOTICE: Creating Standard Mailboxes MigrationBatch $($MailboxBatchCounter)..." -ForegroundColor Cyan        
-                
-            try
-            {
-                if ($EmailAddress)
-                {
-                    $MailboxMigrationBatch = New-MigrationBatch -Name "Batch_Mailboxes_$($MailboxBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_mailboxes_$($MailboxBatchCounter).csv")) -PrimaryOnly -NotificationEmails $EmailAddress -ErrorAction Stop
-                    Write-Host "MigrationBatch ""$($MailboxMigrationBatch.Identity)"" with $Index Standard mailbox(es) created successfully, Batch notifications will be sent to ""$EmailAddress""." -ForegroundColor Green
-                }
-                else
-                {
-                    $MailboxMigrationBatch = New-MigrationBatch -Name "Batch_Mailboxes_$($MailboxBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_mailboxes_$($MailboxBatchCounter).csv")) -PrimaryOnly -ErrorAction Stop
-                    Write-Host "MigrationBatch ""$($MailboxMigrationBatch.Identity)"" with $Index Standard mailbox(es) created successfully." -ForegroundColor Green
-                }
-            }
-            catch
-            {
-                Write-Host "Couldn't create MigrationBatch ""$($MailboxMigrationBatch.Identity)"" for Standard mailboxes." -ForegroundColor Red
-            }
-        }
-        $MailboxBatchCounter++
-        $Batch = @()
-        $Index = 0
-    }
-    
-    #put remaining mailboxes into final batch
-    } -End {
-        if ($Batch.Count -gt 0) {
-            
-            $Batch | Export-Csv -Path "$Scriptpath\batch_mailboxes_$($MailboxBatchCounter).csv" -NoTypeInformation -Encoding UTF8
-            
+            $Batch | Export-Csv -Path "$Scriptpath\CSV\redist_mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter).csv" -NoTypeInformation -Encoding UTF8
+        
             if ($ForceCreate)
             {
-                Write-Host "`nNOTICE: Creating Standard Mailboxes MigrationBatch $($MailboxBatchCounter)..." -ForegroundColor Cyan
-
+                Write-Host "`nNOTICE: Creating Standard Mailboxes MigrationBatch $MailboxBatchCounter..." -ForegroundColor Cyan        
+                
                 try
                 {
                     if ($EmailAddress)
                     {
-                        $MailboxMigrationBatch = New-MigrationBatch -Name "Batch_Mailboxes_$($MailboxBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_mailboxes_$($MailboxBatchCounter).csv")) -PrimaryOnly -NotificationEmails $EmailAddress -ErrorAction Stop
+                        $MailboxMigrationBatch = New-MigrationBatch -Name "Redist_Mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter).csv")) -PrimaryOnly -NotificationEmails $EmailAddress -ErrorAction Stop
                         Write-Host "MigrationBatch ""$($MailboxMigrationBatch.Identity)"" with $Index Standard mailbox(es) created successfully, Batch notifications will be sent to ""$EmailAddress""." -ForegroundColor Green
                     }
                     else
                     {
-                        $MailboxMigrationBatch = New-MigrationBatch -Name "Batch_Mailboxes_$($MailboxBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_mailboxes_$($MailboxBatchCounter).csv")) -PrimaryOnly -ErrorAction Stop
+                        $MailboxMigrationBatch = New-MigrationBatch -Name "Redist_Mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter).csv")) -PrimaryOnly -ErrorAction Stop
                         Write-Host "MigrationBatch ""$($MailboxMigrationBatch.Identity)"" with $Index Standard mailbox(es) created successfully." -ForegroundColor Green
                     }
                 }
                 catch
                 {
-                    Write-Host "Couldn't create MigrationBatch ""$($MailboxMigrationBatch.Identity)"" for Standard mailboxes." -ForegroundColor Red
+                    Write-Host "Couldn't create MigrationBatch $MailboxBatchCounter for Standard mailboxes." -ForegroundColor Red
                 }
             }
+            $MailboxBatchCounter++
+            $Batch = @()
+            $Index = 0
         }
-    }
-}
-
-#Create an object for a CSV import file for MigrationBatch(es) for Archive mailboxes with a fitting staging database entry (by a simple algorithm schema)
-if ($ArchiveMBXs)
-{
-    $StagingDBs = $StagingDBs | Sort-Object -Descending
-    $Index = 0
-    $Direction = 1
-    $MaxIndex = $StagingDBsCount - 1
-
-    $ArchiveMBXsObject = foreach ($ArchiveMBXResult in $ArchiveMBXsResult)
-    {
-        $TargetArchiveDatabase = $StagingDBs[$Index]
-
-        [PSCustomObject]@{
-        EmailAddress = $ArchiveMBXResult.EmailAddress
-        TargetArchiveDatabase = $TargetArchiveDatabase
-        BadItemLimit = $BadItemLimit
-        }
-
-        $Next = $Index + $Direction
-
-        if ($Next -gt $MaxIndex -or $Next -lt 0)
-        {
-            $Direction = -$Direction
-        }
-        else
-        {
-            $Index = $Next
-        }
-    }
-
-    #Filter out all Mailboxes, where Source DB(s) is/are found for Database AND ArchiveDatabase
-    $ArchiveMBXsBatchObject = $ArchiveMBXsObject | Where-Object { $_.EmailAddress -notin $Mailboxes.PrimarySmtpAddress }
-  
-    #Export to CSV file, every CSV will not consist of more than $ArchiveBatchBlocksize mailboxes
-    $ArchiveBatchCounter = 1
-
-    $ArchiveMBXsBatchObject | ForEach-Object -Begin {
-        $Index = 0
-        $Batch = @()
-    } -Process {
-
-    $Batch += $_
-    $Index++
-
-    #always $ArchiveBatchBlockSize Archive mailboxes per batch
-    if ($Index -eq $ArchiveBatchBlocksize)
-    {
-        $Batch | Export-Csv -Path "$Scriptpath\batch_archives_$($ArchiveBatchCounter).csv" -NoTypeInformation -Encoding UTF8
-        
-        if ($ForceCreate)
-        {
-            Write-Host "`nNOTICE: Creating Archive Mailboxes MigrationBatch $($ArchiveBatchCounter)..." -ForegroundColor Cyan
-
-            try
+    
+        #put remaining mailboxes into final batch
+        } -End {
+            if ($Batch.Count -gt 0)
             {
-                if ($EmailAddress)
-                {
-                    $ArchiveMigrationBatch = New-MigrationBatch -Name "Batch_Archives_$($ArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_archives_$($ArchiveBatchCounter).csv")) -ArchiveOnly -NotificationEmails $EmailAddress -ErrorAction Stop
-                    Write-Host "MigrationBatch ""$($ArchiveMigrationBatch.Identity)"" with $Index Archive mailbox(es) created successfully, Batch notifications will be sent to ""$EmailAddress""." -ForegroundColor Green
-                }
-                else
-                {
-                    $ArchiveMigrationBatch = New-MigrationBatch -Name "Batch_Archives_$($ArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_archives_$($ArchiveBatchCounter).csv")) -ArchiveOnly -ErrorAction Stop
-                    Write-Host "MigrationBatch ""$($ArchiveMigrationBatch.Identity)"" with $Index Archive mailbox(es) created successfully" -ForegroundColor Green
-                }
-            }
-            catch
-            {
-                Write-Host "Couldn't create MigrationBatch ""$($ArchiveMigrationBatch.Identity)"" for Archive mailboxes." -ForegroundColor Red
-            }
-        }
-        $ArchiveBatchCounter++
-        $Batch = @()
-        $Index = 0
-    }
-    #put remaining Archive mailboxes into final batch
-    } -End {
-        if ($Batch.Count -gt 0) {
+                $Batch | Export-Csv -Path "$Scriptpath\CSV\redist_mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter).csv" -NoTypeInformation -Encoding UTF8
             
-            $Batch | Export-Csv -Path "$Scriptpath\batch_archives_$($ArchiveBatchCounter).csv" -NoTypeInformation -Encoding UTF8
+                if ($ForceCreate)
+                {
+                    Write-Host "`nNOTICE: Creating Standard Mailboxes MigrationBatch $MailboxBatchCounter..." -ForegroundColor Cyan
+
+                    try
+                    {
+                        if ($EmailAddress)
+                        {
+                            $MailboxMigrationBatch = New-MigrationBatch -Name "Redist_Mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter).csv")) -PrimaryOnly -NotificationEmails $EmailAddress -ErrorAction Stop
+                            Write-Host "MigrationBatch ""$($MailboxMigrationBatch.Identity)"" with $Index Standard mailbox(es) created successfully, Batch notifications will be sent to ""$EmailAddress""." -ForegroundColor Green
+                        }
+                        else
+                        {
+                            $MailboxMigrationBatch = New-MigrationBatch -Name "Redist_Mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_mailboxes_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxBatchCounter).csv")) -PrimaryOnly -ErrorAction Stop
+                            Write-Host "MigrationBatch ""$($MailboxMigrationBatch.Identity)"" with $Index Standard mailbox(es) created successfully." -ForegroundColor Green
+                        }
+                    }
+                    catch
+                    {
+                        Write-Host "Couldn't create MigrationBatch $MailboxBatchCounter for Standard mailboxes." -ForegroundColor Red
+                    }
+                }
+            }
+        }
+    }
+
+    #Filter out all Archives, only ArchiveMailbox needs to be moved here
+    $ArchiveMBXsBatchObject = $MailboxesObject | Where-Object { $_.EmailAddress -notin $MBXsArchives.PrimarySmtpAddress -and $_.MailboxType -eq "Archive"}
+    
+    $ArchiveBatchCounter = 0
+
+    if ($ArchiveMBXsBatchObject)
+    {
+        #Export to CSV file, every CSV will not consist of more than $ArchiveBatchBlocksize mailboxes
+        
+        $ArchiveMBXsBatchObject | ForEach-Object -Begin {
+            $ArchiveBatchCounter++
+            $Index = 0
+            $Batch = @()
+        } -Process {
+
+        $Batch += $_ | Select-Object EmailAddress,TargetArchiveDatabase,BadItemLimit
+        $Index++
+
+        #always $ArchiveBatchBlockSize Archive mailboxes per batch
+        if ($Index -eq $ArchiveBatchBlocksize)
+        {
+            $Batch | Export-Csv -Path "$Scriptpath\CSV\redist_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter).csv" -NoTypeInformation -Encoding UTF8
         
             if ($ForceCreate)
             {
-                Write-Host "`nNOTICE: Creating Archive Mailboxes MigrationBatch $($ArchiveBatchCounter)..." -ForegroundColor Cyan
+                Write-Host "`nNOTICE: Creating Archive Mailboxes MigrationBatch $ArchiveBatchCounter..." -ForegroundColor Cyan
 
                 try
                 {
                     if ($EmailAddress)
                     {
-                        $ArchiveMigrationBatch = New-MigrationBatch -Name "Batch_Archives_$($ArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_archives_$($ArchiveBatchCounter).csv")) -ArchiveOnly -NotificationEmails $EmailAddress -ErrorAction Stop
+                        $ArchiveMigrationBatch = New-MigrationBatch -Name "Redist_Archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter).csv")) -ArchiveOnly -NotificationEmails $EmailAddress -ErrorAction Stop
                         Write-Host "MigrationBatch ""$($ArchiveMigrationBatch.Identity)"" with $Index Archive mailbox(es) created successfully, Batch notifications will be sent to ""$EmailAddress""." -ForegroundColor Green
                     }
                     else
                     {
-                        $ArchiveMigrationBatch = New-MigrationBatch -Name "Batch_Archives_$($ArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_archives_$($ArchiveBatchCounter).csv")) -ArchiveOnly -ErrorAction Stop
-                        Write-Host "MigrationBatch ""$($ArchiveMigrationBatch.Identity)"" with $Index Archive mailbox(es) created successfully." -ForegroundColor Green
+                        $ArchiveMigrationBatch = New-MigrationBatch -Name "Redist_Archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter).csv")) -ArchiveOnly -ErrorAction Stop
+                        Write-Host "MigrationBatch ""$($ArchiveMigrationBatch.Identity)"" with $Index Archive mailbox(es) created successfully" -ForegroundColor Green
                     }
                 }
                 catch
                 {
-                    Write-Host "Couldn't create MigrationBatch ""$($ArchiveMigrationBatch.Identity)"" for Archive mailboxes." -ForegroundColor Red
+                    Write-Host "Couldn't create MigrationBatch $ArchiveBatchCounter for Archive mailboxes." -ForegroundColor Red
+                }
+            }
+            $ArchiveBatchCounter++
+            $Batch = @()
+            $Index = 0
+        }
+        #put remaining Archive mailboxes into final batch
+        } -End {
+            if ($Batch.Count -gt 0) {
+            
+                $Batch | Export-Csv -Path "$Scriptpath\CSV\redist_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter).csv" -NoTypeInformation -Encoding UTF8
+        
+                if ($ForceCreate)
+                {
+                    Write-Host "`nNOTICE: Creating Archive Mailboxes MigrationBatch $ArchiveBatchCounter..." -ForegroundColor Cyan
+
+                    try
+                    {
+                        if ($EmailAddress)
+                        {
+                            $ArchiveMigrationBatch = New-MigrationBatch -Name "Redist_Archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter).csv")) -ArchiveOnly -NotificationEmails $EmailAddress -ErrorAction Stop
+                            Write-Host "MigrationBatch ""$($ArchiveMigrationBatch.Identity)"" with $Index Archive mailbox(es) created successfully, Batch notifications will be sent to ""$EmailAddress""." -ForegroundColor Green
+                        }
+                        else
+                        {
+                            $ArchiveMigrationBatch = New-MigrationBatch -Name "Redist_Archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($ArchiveBatchCounter).csv")) -ArchiveOnly -ErrorAction Stop
+                            Write-Host "MigrationBatch ""$($ArchiveMigrationBatch.Identity)"" with $Index Archive mailbox(es) created successfully." -ForegroundColor Green
+                        }
+                    }
+                    catch
+                    {
+                        Write-Host "Couldn't create MigrationBatch $ArchiveBatchCounter for Archive mailboxes." -ForegroundColor Red
+                    }
                 }
             }
         }
     }
-}
 
-#Create a CSV import file for MigrationBatch(es) for Mailboxes with Database and TargetDatabase in the source list (MigrationBatch with both, Primary and Archive)
-if ($MBXsArchives)
-{
-    #Filter all Mailboxes, where Source DB(s) is/are found for Database AND ArchiveDatabase
-    $ArchiveEntries = @{}
-    foreach ($ArchiveMBXObject in $ArchiveMBXsObject)
-    {
-        $ArchiveEntries[$ArchiveMBXObject.EmailAddress] = $ArchiveMBXObject
-    }
-    
-    $MailboxesArchivesObject = foreach ($MailboxObject in $MailboxesObject)
-    {
-        if ($ArchiveEntries.ContainsKey($MailboxObject.EmailAddress))
-        {
-            $ArchiveMBXObject = $ArchiveEntries[$MailboxObject.EmailAddress]
+    #Filter out all Mailboxes, where Primary and ArchiveMailbox are listed in SourceDB(s), both, Primary and Archive needs to be part of the same MoveRequest
+    $MailboxesArchivesObject = $MailboxesObject | Where-Object { $_.EmailAddress -in $MBXsArchives.PrimarySmtpAddress} | Group-Object EmailAddress |
+        ForEach-Object {
+            $group = $_.Group
 
             [PSCustomObject]@{
-        EmailAddress = $MailboxObject.EmailAddress
-        TargetDatabase = $MailboxObject.TargetDatabase
-        TargetArchiveDatabase = $ArchiveMBXObject.TargetArchiveDatabase
-        BadItemLimit = $BadItemLimit
-           }
-        }
-    }
+                EmailAddress          = $_.Name
+                TargetDatabase        = $group.TargetDatabase | select -First 1
+                TargetArchiveDatabase = $group.TargetArchiveDatabase | select -First 1
+                BadItemLimit          = $BadItemLimit
+                }
+            }
         
-    #Export to CSV file, every CSV will not consist of more than $MailboxBatchBlocksize mailboxes
-    $MailboxArchiveBatchCounter = 1
-
-    $MailboxesArchivesObject | ForEach-Object -Begin {
+    #Create a CSV import file for MigrationBatch(es) for particular Mailboxes where Database and TargetDatabase are in the source DB(s) (MigrationBatch/MoveRequest with both, Primary + Archive)
+    $MailboxArchiveBatchCounter = 0
     
-        $Index = 0
-        $Batch = @()
-    } -Process {
-        
-    $Batch += $_
-    $Index++
-
-    #always $MailboxBatchBlockSize mailboxes per batch
-    if ($Index -eq $MailboxBatchBlocksize)
+    if ($MailboxesArchivesObject)
     {
-        $Batch | Export-Csv -Path "$Scriptpath\batch_mailboxes_archives_$($MailboxArchiveBatchCounter).csv" -NoTypeInformation -Encoding UTF8
+        #Export to CSV file, every CSV will not consist of more than $ArchiveBatchBlocksize mailboxes
+        $MailboxesArchivesObject | ForEach-Object -Begin {
+            $MailboxArchiveBatchCounter++
+            $Index = 0
+            $Batch = @()
+        } -Process {
         
-        if ($ForceCreate)
-        {
-            Write-Host "`nNOTICE: Creating Standard Mailboxes AND Archives MigrationBatch $($MailboxArchiveBatchCounter)..." -ForegroundColor Cyan        
-                
-            try
-            {
-                if ($EmailAddress)
-                {
-                    $MailboxArchiveMigrationBatch = New-MigrationBatch -Name "Batch_Mailboxes_Archives_$($MailboxArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_mailboxes_archives_$($MailboxArchiveBatchCounter).csv")) -NotificationEmails $EmailAddress -ErrorAction Stop
-                    Write-Host "MigrationBatch ""$($MailboxArchiveMigrationBatch.Identity)"" with $Index Standard AND Archive mailbox(es) created successfully, Batch notifications will be sent to ""$EmailAddress""." -ForegroundColor Green
-                }
-                else
-                {
-                    $MailboxArchiveMigrationBatch = New-MigrationBatch -Name "Batch_Mailboxes_Archives_$($MailboxArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_mailboxes_archives_$($MailboxArchiveBatchCounter).csv")) -ErrorAction Stop
-                    Write-Host "MigrationBatch ""$($MailboxArchiveMigrationBatch.Identity)"" with $Index Standard AND Archive mailbox(es) created successfully." -ForegroundColor Green
-                }
-            }
-            catch
-            {
-                Write-Host "Couldn't create MigrationBatch ""$($MailboxArchiveMigrationBatch.Identity)"" for Standard AND Archive mailboxes." -ForegroundColor Red
-            }
-        }
-        $MailboxArchiveBatchCounter++
-        $Batch = @()
-        $Index = 0
-    }
-    #put remaining mailboxes into final batch
-    } -End {
-        if ($Batch.Count -gt 0) {
-            
-            $Batch | Export-Csv -Path "$Scriptpath\batch_mailboxes_archives_$($MailboxArchiveBatchCounter).csv" -NoTypeInformation -Encoding UTF8
+        $Batch += $_ | Select-Object EmailAddress,TargetDatabase,TargetArchiveDatabase,BadItemLimit
+        $Index++
 
+        #always $ArchiveBatchBlockSize mailboxes per batch
+        if ($Index -eq $ArchiveBatchBlockSize)
+        {
+            $Batch | Export-Csv -Path "$Scriptpath\CSV\redist_mailboxes_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter).csv" -NoTypeInformation -Encoding UTF8
+        
             if ($ForceCreate)
             {
-                Write-Host "`nNOTICE: Creating Standard Mailboxes AND Archives MigrationBatch $($MailboxArchiveBatchCounter)..." -ForegroundColor Cyan
-
+                Write-Host "`nNOTICE: Creating Standard Mailboxes AND Archives MigrationBatch $MailboxArchiveBatchCounter..." -ForegroundColor Cyan        
+                
                 try
                 {
                     if ($EmailAddress)
                     {
-                        $MailboxArchiveMigrationBatch = New-MigrationBatch -Name "Batch_Mailboxes_Archives_$($MailboxArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_mailboxes_archives_$($MailboxArchiveBatchCounter).csv")) -NotificationEmails $EmailAddress -ErrorAction Stop
+                        $MailboxArchiveMigrationBatch = New-MigrationBatch -Name "Redist_Mailboxes_Archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_mailboxes_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter).csv")) -NotificationEmails $EmailAddress -ErrorAction Stop
                         Write-Host "MigrationBatch ""$($MailboxArchiveMigrationBatch.Identity)"" with $Index Standard AND Archive mailbox(es) created successfully, Batch notifications will be sent to ""$EmailAddress""." -ForegroundColor Green
                     }
                     else
                     {
-                        $MailboxArchiveMigrationBatch = New-MigrationBatch -Name "Batch_Mailboxes_Archives_$($MailboxArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\batch_mailboxes_archives_$($MailboxArchiveBatchCounter).csv")) -ErrorAction Stop
+                        $MailboxArchiveMigrationBatch = New-MigrationBatch -Name "Redist_Mailboxes_Archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_mailboxes_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter).csv")) -ErrorAction Stop
                         Write-Host "MigrationBatch ""$($MailboxArchiveMigrationBatch.Identity)"" with $Index Standard AND Archive mailbox(es) created successfully." -ForegroundColor Green
                     }
                 }
                 catch
                 {
-                    Write-Host "Couldn't create MigrationBatch ""$($MailboxArchiveMigrationBatch.Identity)"" for Standard AND Archive mailboxes." -ForegroundColor Red
+                    Write-Host "Couldn't create MigrationBatch $MailboxArchiveBatchCounter for Standard AND Archive mailboxes." -ForegroundColor Red
+                }
+            }
+            $MailboxArchiveBatchCounter++
+            $Batch = @()
+            $Index = 0
+        }
+        #put remaining mailboxes into final batch
+        } -End {
+            if ($Batch.Count -gt 0) {
+            
+                $Batch | Export-Csv -Path "$Scriptpath\CSV\redist_mailboxes_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter).csv" -NoTypeInformation -Encoding UTF8
+
+                if ($ForceCreate)
+                {
+                    Write-Host "`nNOTICE: Creating Standard Mailboxes AND Archives MigrationBatch $MailboxArchiveBatchCounter..." -ForegroundColor Cyan
+
+                    try
+                    {
+                        if ($EmailAddress)
+                        {
+                            $MailboxArchiveMigrationBatch = New-MigrationBatch -Name "Redist_Mailboxes_Archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_mailboxes_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter).csv")) -NotificationEmails $EmailAddress -ErrorAction Stop
+                            Write-Host "MigrationBatch ""$($MailboxArchiveMigrationBatch.Identity)"" with $Index Standard AND Archive mailbox(es) created successfully, Batch notifications will be sent to ""$EmailAddress""." -ForegroundColor Green
+                        }
+                        else
+                        {
+                            $MailboxArchiveMigrationBatch = New-MigrationBatch -Name "Redist_Mailboxes_Archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter)" -Local -CSVData ([System.IO.File]::ReadAllBytes("$Scriptpath\CSV\redist_mailboxes_archives_$($SourceDBs[0])_$($StagingDBsCSV)_$($MailboxArchiveBatchCounter).csv")) -ErrorAction Stop
+                            Write-Host "MigrationBatch ""$($MailboxArchiveMigrationBatch.Identity)"" with $Index Standard AND Archive mailbox(es) created successfully." -ForegroundColor Green
+                        }
+                    }
+                    catch
+                    {
+                        Write-Host "Couldn't create MigrationBatch $MailboxArchiveBatchCounter for Standard AND Archive mailboxes." -ForegroundColor Red
+                    }
                 }
             }
         }
     }
 }
+else
+{
+    Write-Host "`nNOTICE: We couldn't find any statistics of any User and/or Archive mailbox in any SourceDB(s)." -ForegroundColor Yellow
+}
 
-#Create Move Requests for all PublicFolder Mailboxes in $SourceDB(s), StagingDatabase will be picked up from $StagingDBs randomly
+#Create Move Requests for all PublicFolder Mailboxes into the calculated StagingDatabase
 $PFMoveRequestsCount = 0
+
 if ($PFMBXs)
 {
-    ForEach ($PFMBX in $PFMBXs)
-    {
+    $PFMBXsObject = $MailboxesObject | Where-Object { $_.MailboxType -eq "PublicFolder"}
+
+    $PFMBXsObject | ForEach-Object {
+    
         if ($ForceCreate)
         {
-            Write-Host "`nNOTICE: Creating MoveRequest for PublicFolder Mailbox ""$($PFMBX)""..." -ForegroundColor Cyan
+            Write-Host "`nNOTICE: Creating MoveRequest for PublicFolder Mailbox ""$($_.EmailAddress)""..." -ForegroundColor Cyan
 
-            $StagingDB = Get-Random -InputObject $StagingDBs
-
-            $MoveRequest = Get-Mailbox -PublicFolder $PFMBX | New-MoveRequest -TargetDatabase $StagingDB -Suspend:$true -BadItemLimit $BadItemLimit -WarningAction SilentlyContinue
-
-            Write-Host "Move Request ""$($MoveRequest.displayname)"" for PublicFolder mailbox ""$($PFMBX)"" created successfully." -ForegroundColor Green
+            $MoveRequest = Get-Mailbox -PublicFolder ([String]$_.EmailAddress) | New-MoveRequest -TargetDatabase $_.TargetDatabase -Suspend:$true -BadItemLimit $BadItemLimit -WarningAction SilentlyContinue
+            
+            Write-Host "Move Request for PublicFolder mailbox ""$($_.EmailAddress)"" created successfully." -ForegroundColor Green
         }
         $PFMoveRequestsCount++
     }
 }
 
-#Create Move Requests for all Arbitration mailboxes in $SourceDB(s), StagingDatabase will be picked up from $StagingDBs randomly
+#Create Move Requests for all Arbitration mailboxes into the calculated StagingDatabase
 $ArbitrationMoveRequestsCount = 0
+
 if ($ArbitrationMBXs)
 {
-    ForEach ($ArbitrationMBX in $ArbitrationMBXs)
-    {
+    $ArbitrationMBXsObject = $MailboxesObject | Where-Object { $_.MailboxType -eq "Arbitration"}
+
+    $ArbitrationMBXsObject | ForEach-Object {
+    
         if ($ForceCreate)
         {
-            Write-Host "`nNOTICE: Creating MoveRequest for Arbitration Mailbox ""$($ArbitrationMBX)""..." -ForegroundColor Cyan
+            Write-Host "`nNOTICE: Creating MoveRequest for Arbitration Mailbox ""$($_.EmailAddress)""..." -ForegroundColor Cyan
 
-            $StagingDB = Get-Random -InputObject $StagingDBs
+            $MoveRequest = Get-Mailbox -Arbitration ([String]$_.EmailAddress) | New-MoveRequest -TargetDatabase $_.TargetDatabase -Suspend:$true -BadItemLimit $BadItemLimit -WarningAction SilentlyContinue
 
-            $MoveRequest = Get-Mailbox -Arbitration $ArbitrationMBX | New-MoveRequest -TargetDatabase $StagingDB -Suspend:$true -BadItemLimit $BadItemLimit -WarningAction SilentlyContinue
-
-            Write-Host "Move Request ""$($MoveRequest.displayname)"" for Arbitration mailbox ""$($ArbitrationMBX)"" created successfully." -ForegroundColor Green
+            Write-Host "Move Request for Arbitration mailbox ""$($_.EmailAddress)"" created successfully." -ForegroundColor Green
         }
         $ArbitrationMoveRequestsCount++
     }
 }
 
-#Create Move Requests for all Auditlog mailboxes in $SourceDB(s), StagingDatabase will be picked up from $StagingDBs randomly
+#Create Move Requests for all Auditlog mailboxes into the calculated StagingDatabase
 $AuditLogMoveRequestsCount = 0
-if ($AuditlogMBXs)
+
+if ($AuditLogMBXs)
 {
-    ForEach ($AuditlogMBX in $AuditlogMBXs)
-    {
+    $AuditLogMBXsObject = $MailboxesObject | Where-Object { $_.MailboxType -eq "AuditLog"}
+
+    $AuditLogMBXsObject | ForEach-Object {
+        
         if ($ForceCreate)
         {
-            Write-Host "`nNOTICE: Creating MoveRequest for AuditLog Mailbox ""$($AuditLogMBX)""..." -ForegroundColor Cyan
+            Write-Host "`nNOTICE: Creating MoveRequest for AuditLog Mailbox ""$($_.EmailAddress)""..." -ForegroundColor Cyan
 
-            $StagingDB = Get-Random -InputObject $StagingDBs
+            $MoveRequest = Get-Mailbox -AuditLog ([String]$_.EmailAddress) | New-MoveRequest -TargetDatabase $_.TargetDatabase -Suspend:$true -BadItemLimit $BadItemLimit -WarningAction SilentlyContinue
 
-            $MoveRequest = Get-Mailbox -AuditLog $AuditlogMBX | New-MoveRequest -TargetDatabase $StagingDB -Suspend:$true -BadItemLimit $BadItemLimit -WarningAction SilentlyContinue
-
-            Write-Host "Move Request ""$($MoveRequest.displayname)"" for Auditlog mailbox ""$($AuditlogMBX)"" created successfully." -ForegroundColor Green
+            Write-Host "Move Request for Auditlog mailbox ""$($_.EmailAddress)"" created successfully." -ForegroundColor Green
         }
         $AuditLogMoveRequestsCount++
     }
@@ -832,16 +914,16 @@ if ($AuditlogMBXs)
 
 #Final statement for manual steps to follow for empty and re-create Source Database(s)
 Write-Host "`nPLEASE READ CAREFULLY:" -ForegroundColor Yellow
-Write-Host   "------------------------------------------------------------------------------------------------------------"
+Write-Host   "------------------------------------------------------------------------------------------------------------------------------"
 
 if ($ForceCreate) {Write-Host "This script created:"} else {Write-Host "This script would create:"}
-Write-Host "`n$($MailboxBatchCounter) MigrationBatch(es) for $($Mailboxes.Count) Standard mailboxes,                      " -ForegroundColor Cyan
-Write-Host   "$($ArchiveBatchCounter) MigrationBatch(es) for $($ArchiveMBXs.Count) Archive mailboxes,                     " -ForegroundColor Cyan
-Write-Host   "$($MailboxArchiveBatchCounter) MigrationBatch(es) for $($MBXsArchives.Count) Standard AND Archive mailboxes," -ForegroundColor Cyan
-Write-Host   "$($PFMoveRequestsCount) MoveRequest(s) for $($PFMBXs.Count) PublicFolder mailboxes,                         " -ForegroundColor Cyan
-Write-Host   "$($ArbitrationMoveRequestsCount) MoveRequest(s) for $($ArbitrationMBXs.Count) Arbitration mailboxes,        " -ForegroundColor Cyan
-Write-Host   "$($AuditLogMoveRequestsCount) MoveRequest(s) for $($AuditLogMBXs.Count) Auditlog mailboxes                  " -ForegroundColor Cyan
-Write-Host "`nof the selected SourceDatabase(s).                                                                          "
+Write-Host "`n$($MailboxBatchCounter) MigrationBatch(es) for $((@($MailboxesBatchObject)).Count) Standard mailbox(es),                      " -ForegroundColor Cyan
+Write-Host   "$($ArchiveBatchCounter) MigrationBatch(es) for $((@($ArchiveMBXsBatchObject)).Count) Archive mailbox(es),                     " -ForegroundColor Cyan
+Write-Host   "$($MailboxArchiveBatchCounter) MigrationBatch(es) for $((@($MailboxesArchivesObject)).Count) Standard AND Archive mailbox(es)," -ForegroundColor Cyan
+Write-Host   "$($PFMoveRequestsCount) MoveRequest(s) for $((@($PFMBXsObject)).Count) PublicFolder mailbox(es),                              " -ForegroundColor Cyan
+Write-Host   "$($ArbitrationMoveRequestsCount) MoveRequest(s) for $((@($ArbitrationMBXsObject)).Count) Arbitration Mailbox(es),             " -ForegroundColor Cyan
+Write-Host   "$($AuditLogMoveRequestsCount) MoveRequest(s) for $((@($AuditLogMBXsObject)).Count) Auditlog mailbox(es)                       " -ForegroundColor Cyan
+Write-Host "`nof the selected SourceDatabase(s).                                                                                            "
 
 if ($ForceCreate)
 {
